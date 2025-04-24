@@ -1,5 +1,5 @@
 // ContentView.swift
-// SwiftUI view with Public Holiday detection and conditional Shift selection
+// SwiftUI view with Public Holiday detection, per-date hour overrides, and conditional Shift selection
 
 import SwiftUI
 
@@ -34,7 +34,8 @@ struct ContentView: View {
     @State private var selectedDates = Set<Date>()
     @State private var shiftSelections = [Date: ShiftType]()
     @State private var baseRateString = ""
-    @State private var hoursPerDayString = ""
+    @State private var defaultHoursString = "6.75"
+    @State private var hoursByDate = [Date: Double]()
     @State private var publicHolidays = Set<Date>()
     @State private var activeDate: Date? = nil
 
@@ -82,12 +83,13 @@ struct ContentView: View {
 
     private var totalPay: Double {
         let rate = Double(baseRateString) ?? 0
-        let hours = Double(hoursPerDayString) ?? 0
+        let defaultHours = Double(defaultHoursString) ?? 0
         return selectedDates.reduce(0) { sum, date in
             let ds = calendar.startOfDay(for: date)
             let wd = calendar.component(.weekday, from: ds)
             let isPH = publicHolidays.contains(ds)
             let isWeekend = (wd == 1 || wd == 7)
+            let hours = hoursByDate[ds] ?? defaultHours
             let dayMult = isPH ? DayType.holiday.rawValue : (wd == 7 ? DayType.saturday.rawValue : (wd == 1 ? DayType.sunday.rawValue : DayType.weekday.rawValue))
             let shiftMult = (!isPH && !isWeekend) ? (shiftSelections[ds]?.rawValue ?? ShiftType.morning.rawValue) : 1.0
             return sum + rate * hours * dayMult * shiftMult
@@ -95,115 +97,66 @@ struct ContentView: View {
     }
 
     var body: some View {
-        // Wrap in ScrollView so content can scroll above keyboard
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(spacing: 20) {
-                HStack(spacing: 16) {
-                    Image(systemName: "dollarsign.circle").font(.system(size: 36)).foregroundColor(.accentColor)
-                    VStack(spacing: 12) {
-                        InputRow(label: "Base Rate (AUD/hr)", text: $baseRateString)
-                            .keyboardType(.decimalPad)
-                            .onChange(of: baseRateString) { val in
-                                let filtered = val.filter { "0123456789.".contains($0) }
-                                let dots = filtered.filter { $0 == "." }.count
-                                if filtered != val || dots > 1 {
-                                    baseRateString = String(filtered.prefix { $0 != "." || dots <= 1 })
-                                }
-                            }
-                        InputRow(label: "Hours per Day", text: $hoursPerDayString)
-                            .keyboardType(.decimalPad)
-                            .onChange(of: hoursPerDayString) { val in
-                                let filtered = val.filter { "0123456789.".contains($0) }
-                                let dots = filtered.filter { $0 == "." }.count
-                                if filtered != val || dots > 1 {
-                                    hoursPerDayString = String(filtered.prefix { $0 != "." || dots <= 1 })
-                                }
-                            }
-                    }
-                }
-                .padding(.horizontal)
-                .onAppear(perform: loadPublicHolidays)
-
-                // Fortnight start picker
-                DatePicker("Fortnight Start", selection: $startDate, displayedComponents: .date)
-                    .datePickerStyle(GraphicalDatePickerStyle())
-                    .padding(.horizontal)
-                    .onChange(of: startDate) { _ in loadPublicHolidays() }
-
-                let columns = Array(repeating: GridItem(.flexible()), count: 7)
-                // Calculate offset to align first date under correct weekday
-                let firstWeekdayIndex = calendar.component(.weekday, from: fortnightDates.first!) - calendar.firstWeekday
-                let offset = (firstWeekdayIndex + 7) % 7
-                let totalCells = offset + fortnightDates.count
-                LazyVGrid(columns: columns, spacing: 10) {
-                    ForEach(0..<totalCells, id: \.self) { idx in
-                        if idx < offset {
-                            // Empty placeholder
-                            Color.clear
-                                .frame(minHeight: 40)
-                        } else {
-                            let date = fortnightDates[idx - offset]
-                            let ds = calendar.startOfDay(for: date)
-                            let wd = calendar.component(.weekday, from: ds)
-                            let isPH = publicHolidays.contains(ds)
-                            let isWeekend = (wd == 1 || wd == 7)
-                            let isSel = selectedDates.contains(ds)
-                            let bg = isSel ? Color.blue.opacity(0.7)
-                                : isPH ? Color.red.opacity(0.3)
-                                : isWeekend ? Color.gray.opacity(0.2)
-                                : Color.clear
-                            Text("\(calendar.component(.day, from: ds))")
-                                .frame(maxWidth: .infinity, minHeight: 40)
-                                .background(bg).cornerRadius(8)
-                                .onTapGesture {
-                                    if selectedDates.contains(ds) {
-                                        selectedDates.remove(ds)
-                                        shiftSelections.removeValue(forKey: ds)
-                                    } else {
-                                        selectedDates.insert(ds)
-                                        shiftSelections[ds] = .morning
-                                        // Only prompt shift selection for weekdays
-                                        let wd2 = calendar.component(.weekday, from: ds)
-                                        let isPH2 = publicHolidays.contains(ds)
-                                        let isWeekend2 = (wd2 == 1 || wd2 == 7)
-                                        if !isPH2 && !isWeekend2 {
-                                            activeDate = ds
-                                        }
-                                    }
-                                }
-                        }
-                    }
-                }
-                .padding(.horizontal)
-
+        VStack(spacing: 20) {
+            HStack(spacing: 16) {
+                Image(systemName: "dollarsign.circle").font(.system(size: 36)).foregroundColor(.accentColor)
                 VStack(spacing: 12) {
-                    Text("Selected: \(selectedDates.count) days")
-                    Text(String(format: "Gross Earnings: $%.2f", totalPay))
-                        .font(.title2).bold()
-                    Button("Reset") {
-                        selectedDates.removeAll(); shiftSelections.removeAll(); baseRateString=""; hoursPerDayString=""; startDate=Date(); activeDate=nil
-                    }
-                    .buttonStyle(.borderedProminent)
+                    InputRow(label: "Base Rate (AUD/hr)", text: $baseRateString)
+                        .keyboardType(.decimalPad)
+                    InputRow(label: "Default Hours/Day", text: $defaultHoursString)
+                        .keyboardType(.decimalPad)
                 }
-                .padding()
             }
-            // add extra bottom padding to allow keyboard visibility
-            .padding(.bottom, 300)
-        }
-    .sheet(item: $activeDate) { date in
-        VStack(spacing: 16) {
-            Text("Select Shift for \(displayFormatter.string(from: date))").font(.headline)
-            Picker("Shift", selection: Binding(
-                get: { shiftSelections[date] ?? .morning },
-                set: { shiftSelections[date] = $0 }
-            )) {
-                ForEach(ShiftType.allCases) { st in Text(st.label).tag(st) }
+            .padding(.horizontal)
+            .onAppear(perform: loadPublicHolidays)
+
+            DatePicker("Fortnight Start", selection: $startDate, displayedComponents: .date)
+                .datePickerStyle(GraphicalDatePickerStyle())
+                .padding(.horizontal)
+                .onChange(of: startDate) { _ in loadPublicHolidays() }
+
+            let columns = Array(repeating: GridItem(.flexible()), count: 7)
+            let firstWeekdayIndex = calendar.component(.weekday, from: fortnightDates.first!) - calendar.firstWeekday
+            let offset = (firstWeekdayIndex + 7) % 7
+            let totalCells = offset + fortnightDates.count
+            LazyVGrid(columns: columns, spacing: 10) {
+                ForEach(0..<totalCells, id: \.self) { idx in
+                    if idx < offset {
+                        Color.clear.frame(minHeight: 40)
+                    } else {
+                        let date = fortnightDates[idx - offset]
+                        let ds = calendar.startOfDay(for: date)
+                        let wd = calendar.component(.weekday, from: ds)
+                        let isPH = publicHolidays.contains(ds)
+                        let isWeekend = (wd == 1 || wd == 7)
+                        let isSel = selectedDates.contains(ds)
+                        let bg = isSel ? Color.blue.opacity(0.7) : isPH ? Color.red.opacity(0.3) : isWeekend ? Color.gray.opacity(0.2) : Color.clear
+                        Text("\(calendar.component(.day, from: ds))")
+                            .frame(maxWidth: .infinity, minHeight: 40)
+                            .background(bg).cornerRadius(8)
+                            .onTapGesture {
+                                if selectedDates.contains(ds) {
+                                    selectedDates.remove(ds); shiftSelections.removeValue(forKey: ds)
+                                } else {
+                                    selectedDates.insert(ds); shiftSelections[ds] = .morning; activeDate = ds
+                                }
+                            }
+                    }
+                }
             }
-            .pickerStyle(SegmentedPickerStyle()).padding()
-            Button("Done") { activeDate = nil }.buttonStyle(.borderedProminent)
+            .padding(.horizontal)
+
+            VStack(spacing: 12) {
+                Text("Selected: \(selectedDates.count) days")
+                Text(String(format: "Gross Earnings: $%.2f", totalPay))
+                    .font(.title2).bold()
+                Button("Reset") {
+                    selectedDates.removeAll(); shiftSelections.removeAll(); baseRateString=""; defaultHoursString="6.75"; hoursByDate.removeAll(); startDate=Date(); activeDate=nil
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding()
         }
-        .padding()
-    }
         .sheet(item: $activeDate) { date in
             VStack(spacing: 16) {
                 Text("Select Shift for \(displayFormatter.string(from: date))").font(.headline)
@@ -214,6 +167,18 @@ struct ContentView: View {
                     ForEach(ShiftType.allCases) { st in Text(st.label).tag(st) }
                 }
                 .pickerStyle(SegmentedPickerStyle()).padding()
+                // Hours override stepper
+                HStack {
+                    Text("Hours:")
+                    Spacer()
+                    Stepper(value: Binding(
+                        get: { hoursByDate[date] ?? (Double(defaultHoursString) ?? 0) },
+                        set: { hoursByDate[date] = $0 }
+                    ), in: 0...24, step: 0.25) {
+                        Text("\(hoursByDate[date] ?? (Double(defaultHoursString) ?? 0), specifier: "%.2f") h")
+                    }
+                    .frame(width: 160)
+                }
                 Button("Done") { activeDate = nil }.buttonStyle(.borderedProminent)
             }
             .padding()
